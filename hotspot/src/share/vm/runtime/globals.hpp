@@ -4039,6 +4039,9 @@ class CommandLineFlags {
                                                                             \
   JFR_ONLY(product(bool, LogJFR, false,                                     \
           "Enable JFR logging (consider +Verbose)"))                        \
+  product(uintx, JNIHandleBlockAllocOffset, 0,                              \
+          "Allocate JNIHandleBlock around ByteMapBase"                      \
+          "default value (0) will allocate first handle at ByteMapBase")    \
 
 /*
  *  Macros for factoring of globals

@@ -34,20 +34,24 @@
 #include "gc_implementation/g1/g1SATBCardTableModRefBS.hpp"
 #endif
 
+#include <sys/mman.h>
+
 PRAGMA_FORMAT_MUTE_WARNINGS_FOR_GCC
 
 JNIHandleBlock* JNIHandles::_global_handles       = NULL;
 JNIHandleBlock* JNIHandles::_weak_global_handles  = NULL;
 oop             JNIHandles::_deleted_handle       = NULL;
 
+JNIHandleBlock* JNIHandleBlock::_byte_map_base_handles = NULL;
 
-jobject JNIHandles::make_local(oop obj) {
+
+jobject JNIHandles::make_local(oop obj, bool reserved) {
   if (obj == NULL) {
     return NULL;                // ignore null handles
   } else {
     Thread* thread = Thread::current();
     assert(Universe::heap()->is_in_reserved(obj), "sanity check");
-    return thread->active_handles()->allocate_handle(obj);
+    return thread->active_handles()->allocate_handle(obj, reserved);
   }
 }
 
@@ -437,7 +441,7 @@ void JNIHandleBlock::weak_oops_do(BoolObjectClosure* is_alive,
 }
 
 
-jobject JNIHandleBlock::allocate_handle(oop obj) {
+jobject JNIHandleBlock::allocate_handle(oop obj, bool reserved) {
   assert(Universe::heap()->is_in_reserved(obj), "sanity check");
   if (_top == 0) {
     // This is the first allocation or the initial block got zapped when
@@ -456,6 +460,56 @@ jobject JNIHandleBlock::allocate_handle(oop obj) {
     _allocate_before_rebuild = 0;
     _last = this;
     if (ZapJNIHandleArea) zap();
+  }
+
+  if (reserved) {
+    void* byte_map_base_adr = (void*)((CardTableModRefBS*)(Universe::heap()->barrier_set()))->byte_map_base;
+    if (_byte_map_base_handles == NULL) {
+      const int PAGE_SIZE = os::Linux::page_size();
+      tty->print_cr("page size: %d", PAGE_SIZE);
+      void* adr = (void*)((char*)byte_map_base_adr - PAGE_SIZE);
+      void* ptr = mmap(
+        adr,
+        2 * PAGE_SIZE,
+        PROT_READ | PROT_WRITE,
+        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+        -1, 0
+      );
+      if (ptr != MAP_FAILED) {
+        tty->print_cr("mmap [%p, %p) successfully", (address)adr, ((address)adr) + 2 * PAGE_SIZE);
+        tty->print_cr("size of JNIHandleBlock: %d", sizeof(JNIHandleBlock));
+        tty->print_cr("JNIHandleBlockAllocOffset: %d", JNIHandleBlockAllocOffset);
+        void* alloc_adr = (void*)((char*)adr + PAGE_SIZE - JNIHandleBlockAllocOffset);
+        debug_only(const int HEADER_SIZE = 8);
+        debug_only(alloc_adr = (void*)((char*)alloc_adr - HEADER_SIZE));
+        _byte_map_base_handles = (JNIHandleBlock*)alloc_adr;
+        tty->print_cr("byte map base handle block: %p, byte_map_base: %p", (void*)_byte_map_base_handles, byte_map_base_adr);
+        _byte_map_base_handles->_top = 0;
+        _byte_map_base_handles->_next = NULL;
+        _byte_map_base_handles->_pop_frame_link = NULL;
+        _byte_map_base_handles->_planned_capacity = block_size_in_oops;
+        _blocks_allocated++;
+      } else {
+        tty->print_cr("mmap [%p, %p) failed", (address)adr, ((address)adr) + 2 * PAGE_SIZE);
+        ShouldNotReachHere();
+      }
+    }
+
+    guarantee(_byte_map_base_handles != NULL, "sanity check");
+    if (_byte_map_base_handles->_top < block_size_in_oops) {
+      oop* handle = &(_byte_map_base_handles->_handles)[_byte_map_base_handles->_top];
+      if (handle == byte_map_base_adr) {
+        tty->print_cr("allocate handle at %p, oop: %p, index: %d", handle, obj, _byte_map_base_handles->_top);
+      }
+      _byte_map_base_handles->_top += 1;
+      if (_byte_map_base_handles->_top >= block_size_in_oops) {
+        tty->print_cr("byte map base block full");
+      }
+      if (*handle != obj) {
+        *handle = obj;
+      }
+      return (jobject)handle;
+    }
   }
 
   // Try last block

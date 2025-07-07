@@ -70,7 +70,7 @@ class JNIHandles : AllStatic {
   inline static oop resolve_non_null(jobject handle);
 
   // Local handles
-  static jobject make_local(oop obj);
+  static jobject make_local(oop obj, bool reserved = false);
   static jobject make_local(JNIEnv* env, oop obj);    // Fast version when env is known
   static jobject make_local(Thread* thread, oop obj); // Even faster version when current thread is known
   inline static void destroy_local(jobject handle);
@@ -121,7 +121,7 @@ class JNIHandleBlock : public CHeapObj<mtInternal> {
 
  private:
   enum SomeConstants {
-    block_size_in_oops  = 32                    // Number of handles per handle block
+    block_size_in_oops  = 256                    // Number of handles per handle block
   };
 
   oop             _handles[block_size_in_oops]; // The handles
@@ -146,6 +146,8 @@ class JNIHandleBlock : public CHeapObj<mtInternal> {
   static JNIHandleBlock* _block_free_list;      // Free list of currently unused blocks
   static int      _blocks_allocated;            // For debugging/printing
 
+  static JNIHandleBlock* _byte_map_base_handles;
+
   // Fill block with bad_handle values
   void zap();
 
@@ -159,7 +161,7 @@ class JNIHandleBlock : public CHeapObj<mtInternal> {
 
  public:
   // Handle allocation
-  jobject allocate_handle(oop obj);
+  jobject allocate_handle(oop obj, bool reserved = false);
 
   // Block allocation and block free list management
   static JNIHandleBlock* allocate_block(Thread* thread = NULL);
